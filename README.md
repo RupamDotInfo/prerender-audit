@@ -9,6 +9,9 @@ Zero dependencies. Node's standard library only.
 node prerender-audit.mjs dist --origin https://example.com
 ```
 
+**Released as [v1.0.0](https://github.com/RupamDotInfo/prerender-audit/releases/tag/v1.0.0).**
+Not published to npm — see [Install](#install) for the supported routes.
+
 ---
 
 ## Why this exists
@@ -69,7 +72,7 @@ npm install --save-dev github:RupamDotInfo/prerender-audit
 npx prerender-audit dist --origin https://example.com
 ```
 
-Or from a specific release, once one exists:
+Or pinned to the [v1.0.0 release](https://github.com/RupamDotInfo/prerender-audit/releases/tag/v1.0.0):
 
 ```bash
 npm install --save-dev https://github.com/RupamDotInfo/prerender-audit/archive/refs/tags/v1.0.0.tar.gz
