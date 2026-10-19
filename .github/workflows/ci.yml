@@ -1,0 +1,93 @@
+name: CI
+
+# A safety tool that cannot be run from a clean checkout is not a safety tool,
+# so the first job proves the test suite runs with no install step at all --
+# which is also how the tool is documented to be used.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (no install required)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Syntax check
+        run: node --check prerender-audit.mjs
+
+      - name: Tests with the built-in runner
+        # Deliberately no `npm ci`: the suite must work on a bare checkout.
+        run: node --test
+
+  self-check:
+    name: The tool catches the defect it exists for
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Dogfoods the checker against a build broken the way the real defect
+      # was: a sitemap advertising routes the build never produced.
+      - name: A broken build must be rejected
+        run: |
+          set -euo pipefail
+          mkdir -p broken
+          cat > broken/sitemap.xml <<'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.test/</loc></url>
+            <url><loc>https://example.test/updates</loc></url>
+          </urlset>
+          XML
+          echo '<html><title>home</title></html>' > broken/index.html
+          if node prerender-audit.mjs broken --origin https://example.test; then
+            echo "::error::the checker passed a build that advertises a route it never prerendered"
+            exit 1
+          fi
+
+      - name: A correct build must be accepted
+        run: |
+          set -euo pipefail
+          mkdir -p good/products/lanfy
+          cat > good/sitemap.xml <<'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://example.test/</loc></url>
+            <url><loc>https://example.test/products/lanfy</loc></url>
+          </urlset>
+          XML
+          echo '<html><title>home</title></html>'   > good/index.html
+          echo '<html><title>404</title></html>'    > good/404.html
+          echo '<html><title>lanfy</title></html>'  > good/products/lanfy.html
+          node prerender-audit.mjs good --origin https://example.test
+
+      - name: An unusable input must never read as a pass
+        # The bug this tool shipped with during development: an HTTP error page
+        # in place of a sitemap parsed to zero URLs, which trivially "matched"
+        # zero files.
+        run: |
+          set -euo pipefail
+          mkdir -p empty
+          echo 'error code: 522' > empty/sitemap.xml
+          if node prerender-audit.mjs empty; then
+            echo "::error::an empty sitemap was accepted as agreement"
+            exit 1
+          fi

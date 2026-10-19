@@ -1,0 +1,38 @@
+{
+    "name": "prerender-audit",
+    "version": "1.0.0",
+    "description": "Verify that a static site's sitemap and its prerendered output describe the same pages, before you promote the artifact.",
+    "type": "module",
+    "bin": {
+        "prerender-audit": "./prerender-audit.mjs"
+    },
+    "exports": {
+        ".": "./prerender-audit.mjs"
+    },
+    "files": [
+        "prerender-audit.mjs",
+        "README.md",
+        "LICENSE"
+    ],
+    "scripts": {
+        "test": "node --test",
+        "lint:syntax": "node --check prerender-audit.mjs"
+    },
+    "keywords": [
+        "sitemap",
+        "prerender",
+        "static-site",
+        "ssg",
+        "vite-ssg",
+        "nuxt",
+        "astro",
+        "ci",
+        "deployment"
+    ],
+    "engines": {
+        "node": ">=18"
+    },
+    "license": "MIT",
+    "dependencies": {},
+    "sideEffects": false
+}
