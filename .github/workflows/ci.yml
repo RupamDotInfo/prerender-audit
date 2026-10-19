@@ -34,6 +34,28 @@ jobs:
         # Deliberately no `npm ci`: the suite must work on a bare checkout.
         run: node --test
 
+  package:
+    name: Packaged artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Exercises the tarball and the installed command, not the working tree.
+      #
+      # `node --test` imports the source module and would keep passing if the
+      # bin entry were misspelled, the shebang were dropped, or the CLI were
+      # missing from the published file list. Those defects only appear once
+      # someone installs the package, so the check packs, installs and runs.
+      #
+      # Proven load-bearing: pointing `bin` at a non-existent file makes this
+      # job fail, and it passed before that change was reverted.
+      - name: Pack, install and run the packaged command
+        run: node scripts/package-smoke.mjs
+
   self-check:
     name: The tool catches the defect it exists for
     runs-on: ubuntu-latest

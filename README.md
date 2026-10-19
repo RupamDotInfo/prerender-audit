@@ -6,7 +6,7 @@ same set of pages — before you promote the artifact.
 Zero dependencies. Node's standard library only.
 
 ```
-npx prerender-audit dist --origin https://example.com
+node prerender-audit.mjs dist --origin https://example.com
 ```
 
 ---
@@ -46,17 +46,37 @@ nothing has shipped yet.
 
 ## Install
 
-```bash
-npm install --save-dev prerender-audit
-```
-
-Or run it without installing:
-
-```bash
-npx prerender-audit dist
-```
+**This package is not published to npm.** It is distributed from GitHub. The
+`npm install prerender-audit` form will fail with a 404 until that changes, so
+use one of the two routes below.
 
 Requires Node 18 or newer.
+
+### Run it without installing anything
+
+```bash
+git clone https://github.com/RupamDotInfo/prerender-audit.git
+node prerender-audit/prerender-audit.mjs dist --origin https://example.com
+```
+
+### Install it as a dependency
+
+npm can install straight from the GitHub URL, which gives you the same
+`prerender-audit` command a registry package would:
+
+```bash
+npm install --save-dev github:RupamDotInfo/prerender-audit
+npx prerender-audit dist --origin https://example.com
+```
+
+Or from a specific release, once one exists:
+
+```bash
+npm install --save-dev https://github.com/RupamDotInfo/prerender-audit/archive/refs/tags/v1.0.0.tar.gz
+```
+
+If you would rather not install anything, clone-and-run above is the whole
+story — there are no dependencies to resolve.
 
 ## Usage
 
@@ -158,12 +178,21 @@ Honest about what this does **not** do:
 ## Development
 
 ```bash
-node --test          # 23 tests, no install required
+node --test                    # 23 unit tests, no install required
+node scripts/package-smoke.mjs # 15 checks against the packed, installed package
 ```
 
-Tests use Node's built-in runner, so a clean checkout can be tested with no
+Unit tests use Node's built-in runner, so a clean checkout can be tested with no
 `npm install` at all — which matters for a check people are meant to run during
 a build.
+
+The package smoke test exists because unit tests cannot see packaging. They
+import the source module and call its functions, and would keep passing if the
+`bin` entry were misspelled, the shebang were dropped, or the CLI were missing
+from the published file list — defects that only appear once someone installs
+the package. That test runs `npm pack`, installs the tarball into a throwaway
+project, and invokes the installed command. It is proven load-bearing: pointing
+`bin` at a non-existent file makes it fail.
 
 ## Licence
 
