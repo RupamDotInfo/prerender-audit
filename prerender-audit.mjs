@@ -44,9 +44,10 @@
  */
 
 import { readFile, readdir, stat } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 
 /** Files that legitimately exist without being listed in the sitemap. */
 const DEFAULT_EXTRAS = ['404.html']
@@ -391,7 +392,29 @@ async function main(argv) {
 }
 
 // Only run the CLI when executed directly, so the audit stays importable.
-if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
+//
+// Both sides are resolved to real paths before comparing. Comparing the raw
+// argv entry is not enough: on Linux and macOS npm installs a bin entry as a
+// *symlink* to this file, so `process.argv[1]` is the symlink path
+// (`.bin/prerender-audit`) while `import.meta.url` is the real file
+// (`.mjs`). A name comparison silently failed to match, main() never ran, and
+// the command exited 0 without auditing anything.
+//
+// That is the worst possible failure for this tool: a CI step calling
+// `npx prerender-audit` would have passed on every run, including runs where
+// the build was broken. Found by the package smoke test, which packs and runs
+// the installed command rather than the source.
+function isInvokedDirectly() {
+    try {
+        const entry = realpathSync(process.argv[1])
+        const self = realpathSync(fileURLToPath(import.meta.url))
+        return entry === self
+    } catch {
+        return false
+    }
+}
+
+if (isInvokedDirectly()) {
     main(process.argv).then((code) => {
         process.exit(code)
     })

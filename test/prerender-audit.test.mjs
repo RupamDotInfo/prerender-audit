@@ -1,10 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import process from 'node:process'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 import {
     parseSitemap,
@@ -294,6 +298,45 @@ test('CLI rejects non-HTTP(S) --origin protocols', async () => {
     } finally {
         await f.cleanup()
     }
+})
+
+test('the CLI runs when reached through a symlink, as npm installs it', async () => {
+    // On Linux and macOS npm installs a bin entry as a symlink to this file.
+    //
+    // The entry guard used to compare names, which does not match across a
+    // symlink, so main() never ran and the command exited 0 without auditing
+    // anything. In CI that means `npx prerender-audit` passes on a broken
+    // build, which is the single most damaging way this tool could misbehave.
+    const f = await fixture({
+        'sitemap.xml': sitemap(`${ORIGIN}/`, `${ORIGIN}/updates`),
+        'index.html': page('home'),
+    })
+
+    try {
+        const link = path.join(f.dir, 'linked-audit')
+        symlinkSync(path.join(REPO, 'prerender-audit.mjs'), link)
+
+        const result = spawnSync(process.execPath, [link, f.dir, '--origin', ORIGIN], {
+            encoding: 'utf8',
+        })
+
+        assert.equal(
+            result.status,
+            1,
+            'running through a symlink must still perform the audit and exit 1 on a mismatch',
+        )
+        assert.match(result.stdout, /advertised but NOT prerendered/)
+    } finally {
+        await f.cleanup()
+    }
+})
+
+test('importing the module does not execute the CLI', async () => {
+    // The other half of the guard: a library import must stay side-effect free.
+    const imported = await import('../prerender-audit.mjs')
+
+    assert.equal(typeof imported.audit, 'function')
+    assert.equal(typeof imported.formatReport, 'function')
 })
 
 // ---------------------------------------------------------------- end to end
