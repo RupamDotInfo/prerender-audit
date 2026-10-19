@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 import {
     parseSitemap,
@@ -241,6 +243,57 @@ test('formatReport marks unusable input distinctly from a mismatch', () => {
 
     assert.match(output, /INPUT UNUSABLE/)
     assert.doesNotMatch(output, /advertised but NOT prerendered/)
+})
+
+// ---------------------------------------------------------------- cli argument validation
+
+const CLI_PATH = fileURLToPath(new URL('../prerender-audit.mjs', import.meta.url))
+
+for (const option of ['--sitemap', '--origin', '--extra']) {
+    test(`CLI rejects ${option} without a value`, () => {
+        const result = spawnSync(process.execPath, [CLI_PATH, '.', option], {
+            encoding: 'utf8',
+        })
+
+        assert.equal(result.status, 2)
+        assert.match(result.stderr, new RegExp(`option "${option}" requires a value`))
+    })
+}
+
+test('CLI rejects an invalid --origin URL as a bad invocation', async () => {
+    const f = await fixture({
+        'sitemap.xml': sitemap(`${ORIGIN}/`),
+        'index.html': page('home'),
+    })
+
+    try {
+        const result = spawnSync(process.execPath, [CLI_PATH, f.dir, '--origin', 'not a URL'], {
+            encoding: 'utf8',
+        })
+
+        assert.equal(result.status, 2)
+        assert.match(result.stderr, /invalid --origin URL/)
+    } finally {
+        await f.cleanup()
+    }
+})
+
+test('CLI rejects non-HTTP(S) --origin protocols', async () => {
+    const f = await fixture({
+        'sitemap.xml': sitemap(`${ORIGIN}/`),
+        'index.html': page('home'),
+    })
+
+    try {
+        const result = spawnSync(process.execPath, [CLI_PATH, f.dir, '--origin', 'file:///tmp/site'], {
+            encoding: 'utf8',
+        })
+
+        assert.equal(result.status, 2)
+        assert.match(result.stderr, /Only HTTP\(S\) origins are supported/)
+    } finally {
+        await f.cleanup()
+    }
 })
 
 // ---------------------------------------------------------------- end to end
