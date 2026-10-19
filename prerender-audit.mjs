@@ -302,10 +302,19 @@ async function main(argv) {
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i]
-        if (arg === '--sitemap') sitemap = args[++i]
-        else if (arg === '--origin') origin = args[++i]
-        else if (arg === '--extra') extras.push(args[++i])
-        else if (arg === '--json') asJson = true
+
+        if (arg === '--sitemap' || arg === '--origin' || arg === '--extra') {
+            const value = args[i + 1]
+            if (!value || value.startsWith('--')) {
+                usage(`option "${arg}" requires a value.`)
+                return 2
+            }
+
+            i += 1
+            if (arg === '--sitemap') sitemap = value
+            else if (arg === '--origin') origin = value
+            else extras.push(value)
+        } else if (arg === '--json') asJson = true
         else if (arg.startsWith('-')) {
             usage(`unknown option "${arg}".`)
             return 2
@@ -332,10 +341,27 @@ async function main(argv) {
     const advertised = parseSitemap(await readFile(sitemapPath, 'utf8'))
     const prerendered = (await walkHtmlFiles(dir)).sort()
 
+    let expectedOrigin = null
+    if (origin) {
+        let parsedOrigin
+        try {
+            parsedOrigin = new URL(origin)
+        } catch {
+            usage(`invalid --origin URL "${origin}". Expected an absolute HTTP(S) URL.`)
+            return 2
+        }
+
+        if (!['http:', 'https:'].includes(parsedOrigin.protocol)) {
+            usage(`invalid --origin URL "${origin}". Only HTTP(S) origins are supported.`)
+            return 2
+        }
+        expectedOrigin = parsedOrigin.origin
+    }
+
     const result = audit({
         advertised,
         prerendered,
-        origin: origin ? new URL(origin).origin : null,
+        origin: expectedOrigin,
         extras: extras.length ? extras : DEFAULT_EXTRAS,
     })
 
