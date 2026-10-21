@@ -167,6 +167,16 @@ export function audit({ advertised, prerendered, origin, extras = DEFAULT_EXTRAS
 
     // --- advertised: must have a file, and must belong to this origin -------
     const seen = new Map()
+
+    /*
+     * The prerendered files this site advertises.
+     *
+     * Collected here, in the loop that decides which URLs belong to this site,
+     * because that is the only place the question is answered. The orphan
+     * check below consumes the set; it never decides membership itself.
+     */
+    const advertisedPaths = new Set()
+
     for (const url of advertised) {
         seen.set(url, (seen.get(url) ?? 0) + 1)
 
@@ -184,6 +194,29 @@ export function audit({ advertised, prerendered, origin, extras = DEFAULT_EXTRAS
         }
 
         const expectedFile = urlToPrerenderPath(parsed.pathname)
+
+        /*
+         * Only an on-site URL credits a file to this site.
+         *
+         * The orphan check asks "is this prerendered file advertised?". That
+         * question only has an answer for URLs that belong to this site: a
+         * sitemap entry pointing at another origin says nothing about what
+         * this site published.
+         *
+         * Crediting offsite URLs here let `https://elsewhere.test/about` vouch
+         * for a local `about.html`, so a page this site's own sitemap never
+         * advertised was passed off as advertised. The tool reported the
+         * offsite URL and then stayed silent about the real problem - a page
+         * that exists locally and that no local URL points at.
+         *
+         * A false negative is the one failure a promotion gate cannot afford,
+         * so the rule is applied where the on-site decision is made: once.
+         *
+         * With no expected origin there is nothing to compare against, every
+         * URL is on-site, and every URL credits its file as before.
+         */
+        advertisedPaths.add(expectedFile)
+
         if (!prerendered.includes(expectedFile)) {
             missing.push({ url, expectedFile })
         }
@@ -194,15 +227,6 @@ export function audit({ advertised, prerendered, origin, extras = DEFAULT_EXTRAS
     }
 
     // --- prerendered: should be advertised, unless it is a known extra -----
-    const advertisedPaths = new Set()
-    for (const url of advertised) {
-        try {
-            advertisedPaths.add(urlToPrerenderPath(new URL(url).pathname))
-        } catch {
-            /* already reported as offsite */
-        }
-    }
-
     for (const file of prerendered) {
         if (extras.includes(file)) continue
         if (advertisedPaths.has(file)) continue
