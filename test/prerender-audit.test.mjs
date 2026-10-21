@@ -161,6 +161,147 @@ test('an offsite URL is reported and not counted as missing', () => {
     assert.equal(result.missing.length, 0)
 })
 
+test('an offsite URL does not credit a path to this site', () => {
+    // The original defect. The advertised-file set was built from every URL
+    // in the sitemap, offsite ones included, so `https://elsewhere.test/about`
+    // vouched for the local `about.html`. The page this site's own sitemap
+    // never advertised was then passed off as advertised and never reported.
+    //
+    // A promotion gate that stays quiet about a page it cannot reach is a
+    // false negative, which is the one kind of miss this tool cannot afford.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, 'https://elsewhere.test/about'],
+        prerendered: ['index.html', 'about.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, false)
+
+    // The offsite URL is still reported, with the same reason as before.
+    assert.equal(result.offsite.length, 1)
+    assert.equal(result.offsite[0].url, 'https://elsewhere.test/about')
+    assert.equal(
+        result.offsite[0].reason,
+        'points at https://elsewhere.test, expected https://example.test',
+    )
+
+    // And the local page it was masking is now reported, with a usable URL.
+    assert.equal(result.orphaned.length, 1)
+    assert.equal(result.orphaned[0].file, 'about.html')
+    assert.equal(result.orphaned[0].url, '/about')
+    assert.notEqual(result.orphaned[0].url, null)
+})
+
+test('an offsite URL is the only mention of a path, and the path is still an orphan', () => {
+    // The same defect in its purest form: nothing on this site points at
+    // `/updates`, and the one URL that mentions it belongs to another origin.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, 'https://elsewhere.test/updates'],
+        prerendered: ['index.html', 'updates.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.offsite.length, 1)
+    assert.equal(result.orphaned.length, 1)
+    assert.equal(result.orphaned[0].file, 'updates.html')
+    assert.equal(result.orphaned[0].url, '/updates')
+})
+
+test('a page no URL mentions at all is reported as an orphan', () => {
+    // The genuine case, with an offsite URL present to make sure the two do
+    // not get confused for one another.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, 'https://elsewhere.test/about'],
+        prerendered: ['index.html', 'about.html', 'secret-admin.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.orphaned.length, 2)
+    assert.deepEqual(result.orphaned.map((o) => o.file), ['about.html', 'secret-admin.html'])
+    assert.deepEqual(result.orphaned.map((o) => o.url), ['/about', '/secret-admin'])
+})
+
+test('a same-origin page no URL mentions is still reported as an orphan', () => {
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/about`],
+        prerendered: ['index.html', 'about.html', 'secret-admin.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.orphaned.length, 1)
+    assert.equal(result.orphaned[0].file, 'secret-admin.html')
+    assert.equal(result.orphaned[0].url, '/secret-admin')
+})
+
+test('an offsite URL does not stop an on-site URL from crediting the same file', () => {
+    // Both URLs name `/about`, but only one of them is about this site. The
+    // on-site one still credits `about.html`, so the file is not an orphan.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/about`, 'https://elsewhere.test/about'],
+        prerendered: ['index.html', 'about.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.offsite.length, 1)
+    assert.deepEqual(result.orphaned, [])
+    assert.equal(result.ok, false)
+})
+
+test('a malformed URL does not credit a path to this site', () => {
+    const result = audit({
+        advertised: [`${ORIGIN}/`, 'not a url'],
+        prerendered: ['index.html', 'about.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.offsite.length, 1)
+    assert.equal(result.offsite[0].reason, 'not a valid absolute URL')
+    assert.equal(result.orphaned.length, 1)
+    assert.equal(result.orphaned[0].file, 'about.html')
+})
+
+test('without an expected origin every advertised URL credits its file', () => {
+    // No `--origin` means there is nothing to compare against, so every URL
+    // is on-site and every URL credits the file behind it. Treating "no
+    // origin" as "no advertised files" would report every page as an orphan.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, 'https://elsewhere.test/about'],
+        prerendered: ['index.html', 'about.html'],
+    })
+
+    assert.equal(result.offsite.length, 0)
+    assert.deepEqual(result.orphaned, [])
+    assert.equal(result.ok, true)
+})
+
+test('without an expected origin a page no URL mentions is still an orphan', () => {
+    const result = audit({
+        advertised: [`${ORIGIN}/`],
+        prerendered: ['index.html', 'secret-admin.html'],
+    })
+
+    assert.equal(result.orphaned.length, 1)
+    assert.equal(result.orphaned[0].file, 'secret-admin.html')
+    assert.equal(result.orphaned[0].url, '/secret-admin')
+})
+
+test('an offsite URL does not suppress a genuinely missing file', () => {
+    // The fix must not soften the check that matters most. A URL this site
+    // advertises with no file behind it still 404s, and is still reported -
+    // including when an offsite URL is in the sitemap alongside it.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/updates`, 'https://elsewhere.test/about'],
+        prerendered: ['index.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.missing.length, 1)
+    assert.equal(result.missing[0].url, `${ORIGIN}/updates`)
+    assert.equal(result.missing[0].expectedFile, 'updates.html')
+    assert.equal(result.offsite.length, 1)
+})
+
 test('duplicate sitemap entries are reported', () => {
     const result = audit({
         advertised: [`${ORIGIN}/`, `${ORIGIN}/about`, `${ORIGIN}/about`],
@@ -392,6 +533,30 @@ test('detects the real defect: sitemap grew but the build did not', async () => 
 
         assert.equal(result.ok, false)
         assert.equal(result.missing.length, 2)
+    } finally {
+        await f.cleanup()
+    }
+})
+
+test('the CLI reports the orphan that an offsite URL used to mask', async () => {
+    // End to end, because the masked orphan is what the operator never sees:
+    // the offsite URL is on the report, and the unadvertised page that only
+    // the offsite URL mentioned was not.
+    const f = await fixture({
+        'sitemap.xml': sitemap(`${ORIGIN}/`, 'https://elsewhere.test/about'),
+        'index.html': page('home'),
+        'about.html': page('about'),
+    })
+
+    try {
+        const result = spawnSync(process.execPath, [CLI_PATH, f.dir, '--origin', ORIGIN], {
+            encoding: 'utf8',
+        })
+
+        assert.equal(result.status, 1, result.stdout + result.stderr)
+        assert.match(result.stdout, /offsite or malformed URL/)
+        assert.match(result.stdout, /prerendered but not advertised/)
+        assert.match(result.stdout, /about\.html\s+\(\/about\)/)
     } finally {
         await f.cleanup()
     }
