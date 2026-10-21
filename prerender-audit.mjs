@@ -43,7 +43,7 @@
  * is one more thing that can fail during an incident.
  */
 
-import { readFile, readdir, stat } from 'node:fs/promises'
+import { readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { existsSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -112,17 +112,169 @@ export function prerenderPathToUrl(relative, extras = DEFAULT_EXTRAS) {
 
 // ---------------------------------------------------------------- walking
 
-async function walkHtmlFiles(dir, base = dir, found = []) {
-    const entries = await readdir(dir, { withFileTypes: true })
+/**
+ * Errors that mean "there is nothing behind this entry" rather than "this
+ * build is broken and the audit cannot be trusted".
+ *
+ *   ENOENT   a dangling symlink, or a directory removed mid-walk
+ *   ELOOP    a symlink that points at itself, or into a cycle
+ *   ENOTDIR  a path component that turned out not to be a directory
+ *
+ * A dangling link is an ABSENT page, not a crash. The walk does not see it,
+ * so the audit reports it as missing if the sitemap advertised it - which is
+ * the right answer, because a link to nowhere is exactly a page that 404s.
+ */
+const SKIPPABLE_CODES = new Set(['ENOENT', 'ELOOP', 'ENOTDIR'])
+
+function isSkippable(error) {
+    return Boolean(error) && SKIPPABLE_CODES.has(error.code)
+}
+
+/**
+ * The fully resolved path of `target`, or null when it cannot be resolved.
+ *
+ * Resolution is what makes a symlink comparable to anything else: `alias`
+ * and `real` are the same directory, so the only comparison that carries
+ * meaning is one made after the link has been followed.
+ */
+async function resolveOrNull(target) {
+    try {
+        return await realpath(target)
+    } catch (error) {
+        if (isSkippable(error)) return null
+        throw error
+    }
+}
+
+/**
+ * Is the resolved `target` inside the resolved `root`?
+ *
+ * Both arguments must already be resolved. A link that points out of the
+ * build is precisely the case this has to catch, and an unresolved
+ * comparison would not see it.
+ */
+function isInside(root, target) {
+    const relative = path.relative(root, target)
+    if (relative === '') return true
+    if (path.isAbsolute(relative)) return false
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`)
+}
+
+function isHtmlFile(name) {
+    return name.toLowerCase().endsWith('.html')
+}
+
+/** The path of `full` as the site would serve it, always with `/` separators. */
+function logicalPath(base, full) {
+    return path.relative(base, full).replace(/\\/g, '/')
+}
+
+/**
+ * Collect every `.html` file the build can serve, as LOGICAL paths.
+ *
+ * LOGICAL, not resolved: `build/linked.html` is served at `/linked`, so that
+ * is the path the sitemap has to advertise, whatever the link points at. A
+ * resolved path would report the target and hide the alias.
+ *
+ * @param {string} dir the build directory
+ * @returns {Promise<string[]>} paths relative to `dir`, using `/` separators
+ */
+export async function walkHtmlFiles(dir) {
+    const found = []
+    const rootReal = await resolveOrNull(dir)
+    if (rootReal === null) return found
+    await walkDirectory(dir, dir, rootReal, [rootReal], found)
+    return found
+}
+
+/**
+ * Recurse into a directory and collect the html files inside it.
+ *
+ * `ancestors` is the chain of RESOLVED directory paths above this one,
+ * starting with the build root. It is what stops a symlink loop: a link
+ * whose resolved path is already in the chain points back at one of our own
+ * ancestors, so following it would walk the same tree forever.
+ *
+ * The chain is per branch, not global, and that is the whole point. A global
+ * "already seen this resolved path" set would make the second alias of a
+ * directory disappear depending on which entry the filesystem happened to
+ * list first, and directory order is not something this tool may rely on.
+ * Two aliases are two routable paths, and both have to be reported.
+ */
+async function walkDirectory(dir, base, rootReal, ancestors, found) {
+    let entries
+    try {
+        entries = await readdir(dir, { withFileTypes: true })
+    } catch (error) {
+        // The directory went away between the listing and the read. There is
+        // nothing to find in a directory that no longer exists.
+        if (isSkippable(error)) return
+        throw error
+    }
+
     for (const entry of entries) {
         const full = path.join(dir, entry.name)
         if (entry.isDirectory()) {
-            await walkHtmlFiles(full, base, found)
-        } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.html')) {
-            found.push(path.relative(base, full).replace(/\\/g, '/'))
+            await visitDirectory(full, base, rootReal, ancestors, found)
+        } else if (entry.isFile()) {
+            if (isHtmlFile(entry.name)) found.push(logicalPath(base, full))
+        } else if (entry.isSymbolicLink()) {
+            await visitSymlink(full, entry.name, base, rootReal, ancestors, found)
         }
     }
-    return found
+}
+
+/**
+ * Recurse into a directory, whether it is a real one or a link to one.
+ *
+ * Two guards apply before the recursion, in this order:
+ *
+ *   cycle       the resolved path is already one of our ancestors, so the
+ *               link points back into the tree being walked
+ *   containment the resolved path is outside the build root, so following
+ *               it would read a tree that is not part of this artifact
+ */
+async function visitDirectory(full, base, rootReal, ancestors, found) {
+    const real = await resolveOrNull(full)
+    if (real === null) return
+    if (ancestors.includes(real)) return
+    if (!isInside(rootReal, real)) return
+    await walkDirectory(full, base, rootReal, [...ancestors, real], found)
+}
+
+/**
+ * Follow a symlink and collect whatever it exposes.
+ *
+ * A symlink is a route of its own. `build/linked.html` pointing at
+ * `build/_real.html` means the build serves BOTH `/linked` and `/_real`, so
+ * both logical paths have to be collected and reported independently.
+ *
+ * Reporting only the target would hide a routable page from the sitemap
+ * check, and a promotion gate that misses a page is worse than one that
+ * stops a page, because the first failure is silent.
+ */
+async function visitSymlink(full, name, base, rootReal, ancestors, found) {
+    let target
+    try {
+        target = await stat(full)
+    } catch (error) {
+        // ENOENT: the link points at nothing. ELOOP: it points at itself or
+        // into a cycle the OS refuses to resolve. Either way there is no
+        // page behind it, so the walk sees nothing - and if the sitemap
+        // advertised it, the audit reports it missing, which is right.
+        if (isSkippable(error)) return
+        throw error
+    }
+
+    if (target.isDirectory()) {
+        await visitDirectory(full, base, rootReal, ancestors, found)
+        return
+    }
+
+    // A link to a file is a page under its own name, whatever it points at.
+    if (target.isFile() && isHtmlFile(name)) {
+        found.push(logicalPath(base, full))
+    }
 }
 
 // ---------------------------------------------------------------- audit
