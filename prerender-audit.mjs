@@ -52,6 +52,21 @@ import { fileURLToPath } from 'node:url'
 /** Files that legitimately exist without being listed in the sitemap. */
 const DEFAULT_EXTRAS = ['404.html']
 
+/**
+ * The known extras, plus any the caller adds.
+ *
+ * The caller's list is additive on purpose. `404.html` is an error document
+ * by convention, not a per-invocation decision, so naming one more file to
+ * ignore must not silently stop the error document from being ignored.
+ *
+ * Treating the list as a replacement meant `--extra search.html` reported
+ * `404.html` as an orphan. That is a false mismatch on a correct artifact,
+ * which is the one failure a promotion gate cannot afford.
+ */
+function mergeExtras(extras = []) {
+    return [...new Set([...DEFAULT_EXTRAS, ...extras])]
+}
+
 // ---------------------------------------------------------------- sitemap
 
 /**
@@ -93,8 +108,26 @@ function decodeXmlEntities(value) {
  */
 export function urlToPrerenderPath(urlPath) {
     const clean = urlPath.replace(/\/+$/, '')
-    const relative = clean === '' ? 'index.html' : `${clean.replace(/^\//, '')}.html`
-    return relative
+    if (clean === '') return 'index.html'
+
+    const relative = clean.replace(/^\//, '')
+
+    /*
+     * A URL that already names an index file is that file.
+     *
+     * `/index.html` is an ordinary public URL: the server serves it from the
+     * same `index.html` the build wrote for the site root. Appending `.html`
+     * to it produced `index.html.html` - a filename no build emits - so the
+     * tool reported a correct artifact as a mismatch and told the operator not
+     * to promote it.
+     *
+     * Only the literal path is used, so `/foo/index.html` still expects
+     * `foo/index.html` and is still reported as missing by a flat build. That
+     * is correct: a flat build really does 404 on that URL.
+     */
+    if (relative.endsWith('index.html')) return relative
+
+    return `${relative}.html`
 }
 
 /**
@@ -105,7 +138,8 @@ export function urlToPrerenderPath(urlPath) {
  */
 export function prerenderPathToUrl(relative, extras = DEFAULT_EXTRAS) {
     const normalised = relative.replace(/\\/g, '/')
-    if (extras.includes(normalised)) return null
+    const ignored = mergeExtras(extras)
+    if (ignored.includes(normalised)) return null
     if (normalised === 'index.html') return '/'
     return '/' + normalised.replace(/\.html$/i, '')
 }
@@ -144,6 +178,16 @@ export function audit({ advertised, prerendered, origin, extras = DEFAULT_EXTRAS
     const duplicates = []
     const orphaned = []
     const unusable = []
+
+    /*
+     * One list of known extras, used for every decision below.
+     *
+     * The orphan report used to be built against the default list while the
+     * skip test used the caller's list, so a file could be reported as an
+     * orphan with no URL to show for it - the report said "(null)" for a file
+     * that plainly had a URL.
+     */
+    const ignored = mergeExtras(extras)
 
     /*
      * Empty input is never agreement.
@@ -204,9 +248,9 @@ export function audit({ advertised, prerendered, origin, extras = DEFAULT_EXTRAS
     }
 
     for (const file of prerendered) {
-        if (extras.includes(file)) continue
+        if (ignored.includes(file)) continue
         if (advertisedPaths.has(file)) continue
-        orphaned.push({ url: prerenderPathToUrl(file), file })
+        orphaned.push({ url: prerenderPathToUrl(file, ignored), file })
     }
 
     return {
@@ -363,7 +407,7 @@ async function main(argv) {
         advertised,
         prerendered,
         origin: expectedOrigin,
-        extras: extras.length ? extras : DEFAULT_EXTRAS,
+        extras,
     })
 
     if (asJson) {

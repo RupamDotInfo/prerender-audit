@@ -91,7 +91,7 @@ prerender-audit <dist-dir> [options]
 |---|---|---|
 | `--sitemap <file>` | `<dist-dir>/sitemap.xml` | Sitemap to read |
 | `--origin <url>` | none | Expected origin; any URL on another origin is reported |
-| `--extra <file>` | `404.html` | Prerendered file to ignore (repeatable) |
+| `--extra <file>` | `404.html` | Extra prerendered file to ignore, in addition to the defaults (repeatable) |
 | `--json` | off | Machine-readable output |
 | `--help` | | Usage |
 
@@ -149,6 +149,7 @@ INPUT UNUSABLE - this is not evidence of agreement
 | URL | Prerendered file |
 |---|---|
 | `/` | `index.html` |
+| `/index.html` | `index.html` |
 | `/about` | `about.html` |
 | `/products/lanfy` | `products/lanfy.html` |
 | `/products/lanfy/downloads` | `products/lanfy/downloads.html` |
@@ -156,6 +157,13 @@ INPUT UNUSABLE - this is not evidence of agreement
 A trailing slash is ignored. This is the flat-output convention used by
 vite-ssg, Nuxt, Astro and `next export`, which is what makes the check possible
 at all.
+
+A URL that already names an index file maps to that file, so `/index.html` and
+`/` are both served by the `index.html` at the site root and both agree with
+it. A URL that names an index file *below* the root — `/products/lanfy/index.html`
+— maps to `products/lanfy/index.html`, which a flat build does not produce, so
+it is still reported as missing. That is correct: a flat build really does
+404 on that URL.
 
 ## Limitations
 
@@ -181,7 +189,7 @@ Honest about what this does **not** do:
 ## Development
 
 ```bash
-node --test                    # 23 unit tests, no install required
+node --test                    # 36 unit tests, no install required
 node scripts/package-smoke.mjs # 15 checks against the packed, installed package
 ```
 

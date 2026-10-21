@@ -83,6 +83,14 @@ test('urlToPrerenderPath ignores a trailing slash', () => {
     assert.equal(urlToPrerenderPath('/about/'), 'about.html')
 })
 
+test('urlToPrerenderPath maps a URL that already names an index file', () => {
+    // `/index.html` is served from the same file the build wrote for the site
+    // root. Appending `.html` to it produced `index.html.html` - a filename no
+    // build emits - so a correct artifact was reported as a mismatch.
+    assert.equal(urlToPrerenderPath('/index.html'), 'index.html')
+    assert.equal(urlToPrerenderPath('/products/lanfy/index.html'), 'products/lanfy/index.html')
+})
+
 test('prerenderPathToUrl is the inverse for ordinary pages', () => {
     assert.equal(prerenderPathToUrl('about.html'), '/about')
     assert.equal(prerenderPathToUrl('products/lanfy.html'), '/products/lanfy')
@@ -182,6 +190,64 @@ test('a custom extra can be ignored', () => {
     })
 
     assert.equal(result.ok, true)
+})
+
+test('adding an extra does not drop the default extras', () => {
+    // `404.html` is an error document by convention, not a per-invocation
+    // decision. Naming another file to ignore must not make the error document
+    // look like an unadvertised page.
+    const result = audit({
+        advertised: [`${ORIGIN}/`],
+        prerendered: ['index.html', '404.html', 'search.html'],
+        origin: ORIGIN,
+        extras: ['search.html'],
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.orphaned, [])
+})
+
+test('an orphan report always carries a usable URL', () => {
+    // The orphan URL used to be resolved against the default extras while the
+    // skip test used the caller's list, so a reported orphan could print
+    // "(null)" for a file that plainly had a URL.
+    const result = audit({
+        advertised: [`${ORIGIN}/`],
+        prerendered: ['index.html', 'search.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.orphaned.length, 1)
+    assert.equal(result.orphaned[0].url, '/search')
+    assert.notEqual(result.orphaned[0].url, null)
+})
+
+test('a sitemap advertising /index.html agrees with a build that wrote index.html', () => {
+    // Both URLs name the same page and the same file. Reporting this as a
+    // mismatch told the operator not to promote a correct artifact.
+    const result = audit({
+        advertised: [`${ORIGIN}/index.html`],
+        prerendered: ['index.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.missing, [])
+    assert.deepEqual(result.orphaned, [])
+})
+
+test('a build that really 404s on /index.html is still reported', () => {
+    // The fix must not soften the check: a flat build has no
+    // `foo/index.html`, so advertising `/foo/index.html` is a genuine 404.
+    const result = audit({
+        advertised: [`${ORIGIN}/products/lanfy/index.html`],
+        prerendered: ['index.html', 'products/lanfy.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.missing.length, 1)
+    assert.equal(result.missing[0].expectedFile, 'products/lanfy/index.html')
 })
 
 // ---------------------------------------------------------------- reporting
@@ -295,6 +361,32 @@ test('CLI rejects non-HTTP(S) --origin protocols', async () => {
 
         assert.equal(result.status, 2)
         assert.match(result.stderr, /Only HTTP\(S\) origins are supported/)
+    } finally {
+        await f.cleanup()
+    }
+})
+
+test('CLI --extra does not drop the default extras', async () => {
+    // End to end, because the defect was in how the CLI wired the option:
+    // passing --extra replaced the default list instead of adding to it, so
+    // 404.html was reported as an unadvertised page and the run failed.
+    const f = await fixture({
+        'sitemap.xml': sitemap(`${ORIGIN}/`),
+        'index.html': page('home'),
+        '404.html': page('not found'),
+        'search.html': page('search'),
+    })
+
+    try {
+        const result = spawnSync(
+            process.execPath,
+            [CLI_PATH, f.dir, '--origin', ORIGIN, '--extra', 'search.html'],
+            { encoding: 'utf8' },
+        )
+
+        assert.equal(result.status, 0, result.stdout + result.stderr)
+        assert.doesNotMatch(result.stdout, /404\.html/)
+        assert.match(result.stdout, /sitemap and prerendered output agree/)
     } finally {
         await f.cleanup()
     }
