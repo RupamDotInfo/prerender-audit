@@ -60,16 +60,47 @@ const DEFAULT_EXTRAS = ['404.html']
  * Deliberately a small regex rather than an XML dependency: sitemaps are
  * machine-generated, and a dependency here would be a dependency that can fail
  * in the middle of an incident. Handles both a urlset and a sitemapindex
- * document, because both declare `loc` in the same namespace.
+ * document, because both declare `loc` in the same namespace, and both the
+ * plain and the CDATA-wrapped form of a `<loc>`.
  */
 export function parseSitemap(xml) {
     const urls = []
-    const pattern = /<loc>\s*([^<]+?)\s*<\/loc>/gi
+    const pattern = /<loc>([\s\S]*?)<\/loc>/gi
     let match
     while ((match = pattern.exec(xml)) !== null) {
-        urls.push(decodeXmlEntities(match[1]).trim())
+        const value = parseLocValue(match[1])
+        /*
+         * An empty <loc> is not a page.
+         *
+         * Reporting it as a malformed URL would refuse an artifact over an
+         * element that carries no route - a false positive, which is the one
+         * kind of miss a promotion gate cannot afford. There is nothing to
+         * miss here: no page is being described.
+         */
+        if (value) urls.push(value)
     }
     return urls
+}
+
+/**
+ * The text of one `<loc>` element.
+ *
+ * A `<loc>` may wrap its value in a CDATA section, which is valid XML and
+ * which some sitemap generators emit. The parser used to require the value to
+ * be plain text, so a CDATA sitemap was read as a sitemap with no URLs at
+ * all - and the empty-input guard, correctly, then refused to treat it as
+ * agreement. The check was unavailable on a sitemap it should have been able
+ * to read.
+ *
+ * CDATA content is literal. Inside a CDATA section `&amp;` is five
+ * characters, not an ampersand, so a CDATA value is not entity-decoded. A
+ * plain `<loc>` is decoded exactly as it always was.
+ */
+function parseLocValue(raw) {
+    const trimmed = raw.trim()
+    const cdata = /^<!\[CDATA\[([\s\S]*)\]\]>$/.exec(trimmed)
+    if (cdata) return cdata[1].trim()
+    return decodeXmlEntities(trimmed).trim()
 }
 
 function decodeXmlEntities(value) {

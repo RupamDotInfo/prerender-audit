@@ -144,6 +144,27 @@ INPUT UNUSABLE - this is not evidence of agreement
     no prerendered .html files were found - is this the right directory?
 ```
 
+### Sitemap forms
+
+A `<loc>` value may be plain text or wrapped in a CDATA section. Both are read:
+
+```xml
+<url><loc>https://example.com/about</loc></url>
+<url><loc><![CDATA[https://example.com/contact]]></loc></url>
+```
+
+CDATA is valid XML, and some sitemap generators emit it. Before this was
+supported, such a sitemap was parsed as a sitemap with no URLs at all — the
+empty-input guard above correctly refused to read that as agreement, but the
+tool still could not do its job on a sitemap it should have been able to read.
+
+CDATA content is literal, so `&amp;` inside a CDATA section stays five
+characters and is not decoded into an ampersand. That is what XML means, and
+it is why the two forms are treated differently.
+
+An empty `<loc>` describes no page, so it is skipped rather than reported as a
+malformed URL.
+
 ## URL to file mapping
 
 | URL | Prerendered file |

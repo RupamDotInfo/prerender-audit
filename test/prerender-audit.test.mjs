@@ -68,6 +68,91 @@ test('parseSitemap tolerates whitespace and a newline format', () => {
     assert.deepEqual(parseSitemap(xml), [`${ORIGIN}/x`])
 })
 
+// ---------------------------------------------------------------- CDATA
+
+/**
+ * A sitemap whose `<loc>` values are wrapped in a CDATA section.
+ *
+ * CDATA is valid XML and some sitemap generators emit it. The parser only
+ * accepted plain text, so such a sitemap was read as a sitemap with no URLs
+ * at all.
+ */
+const cdataSitemap = (...urls) =>
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls
+        .map((u) => `  <url><loc><![CDATA[${u}]]></loc></url>`)
+        .join('\n')}\n</urlset>\n`
+
+test('parseSitemap reads a loc wrapped in CDATA', () => {
+    const xml = cdataSitemap(`${ORIGIN}/`, `${ORIGIN}/about`)
+
+    assert.deepEqual(parseSitemap(xml), [`${ORIGIN}/`, `${ORIGIN}/about`])
+})
+
+test('parseSitemap keeps CDATA content literal', () => {
+    // Inside a CDATA section the text is literal: `&amp;` is five characters,
+    // not an ampersand. Decoding it would invent a URL that was never in
+    // the sitemap, and the audit would then compare against a page that does
+    // not exist.
+    const xml = cdataSitemap(`${ORIGIN}/search?a=1&amp;b=2`)
+
+    assert.deepEqual(parseSitemap(xml), [`${ORIGIN}/search?a=1&amp;b=2`])
+})
+
+test('parseSitemap still decodes entities in a plain loc', () => {
+    // The plain form is unchanged by the CDATA support.
+    const xml = sitemap(`${ORIGIN}/search?a=1&amp;b=2`)
+
+    assert.deepEqual(parseSitemap(xml), [`${ORIGIN}/search?a=1&b=2`])
+})
+
+test('parseSitemap reads a plain loc and a CDATA loc in the same document', () => {
+    const xml =
+        `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+        `  <url><loc>${ORIGIN}/plain</loc></url>\n` +
+        `  <url><loc><![CDATA[${ORIGIN}/cdata]]></loc></url>\n` +
+        `</urlset>\n`
+
+    assert.deepEqual(parseSitemap(xml), [`${ORIGIN}/plain`, `${ORIGIN}/cdata`])
+})
+
+test('an empty loc is not reported as a malformed URL', () => {
+    // An empty <loc> describes no page. Reporting it would refuse an
+    // artifact over an element that carries no route, and there is no page
+    // that could be missing because of it.
+    const xml = '<urlset><url><loc></loc></url><url><loc>   </loc></url></urlset>'
+
+    assert.deepEqual(parseSitemap(xml), [])
+})
+
+test('a CDATA sitemap can be audited', () => {
+    // The point of the fix: the tool can do its job on this sitemap, rather
+    // than refusing to verify anything.
+    const result = audit({
+        advertised: parseSitemap(cdataSitemap(`${ORIGIN}/`, `${ORIGIN}/about`)),
+        prerendered: ['index.html', 'about.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.unusable.length, 0)
+    assert.deepEqual(result.missing, [])
+    assert.deepEqual(result.orphaned, [])
+})
+
+test('a CDATA sitemap still reports a page the build did not produce', () => {
+    // Reading the sitemap must not turn the audit into a rubber stamp: a
+    // page that is advertised and not built is still a 404.
+    const result = audit({
+        advertised: parseSitemap(cdataSitemap(`${ORIGIN}/`, `${ORIGIN}/updates`)),
+        prerendered: ['index.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.missing.length, 1)
+    assert.equal(result.missing[0].expectedFile, 'updates.html')
+})
+
 // ---------------------------------------------------------------- mapping
 
 test('urlToPrerenderPath maps the root to index.html', () => {
