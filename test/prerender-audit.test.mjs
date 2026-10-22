@@ -12,6 +12,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 import {
     parseSitemap,
+    decodePath,
     urlToPrerenderPath,
     prerenderPathToUrl,
     audit,
@@ -91,6 +92,154 @@ test('prerenderPathToUrl is the inverse for ordinary pages', () => {
 
 test('prerenderPathToUrl excludes known extras', () => {
     assert.equal(prerenderPathToUrl('404.html'), null)
+})
+
+// ---------------------------------------------------------------- encoding
+
+/*
+ * A URL carries its percent-encoding; the file that backs it may be written
+ * with the encoding or without it. The convention is not universal, so the
+ * comparison is done on the decoded path and neither side gets to decide.
+ */
+
+test('decodePath decodes a percent-encoded segment', () => {
+    assert.equal(decodePath('/docs/getting%20started'), '/docs/getting started')
+})
+
+test('decodePath decodes a multi-byte sequence as one character', () => {
+    // `%E6%97%A5` is one character in UTF-8, not three. Decoding it escape
+    // by escape would produce mojibake and no file would ever match.
+    assert.equal(decodePath('/docs/%E6%97%A5%E6%9C%AC%E8%AA%9E'), '/docs/日本語')
+})
+
+test('decodePath leaves an encoded slash encoded', () => {
+    // `%2F` is a slash inside a segment, not a separator between segments.
+    assert.equal(decodePath('/docs/a%2Fb'), '/docs/a%2Fb')
+})
+
+test('decodePath leaves a segment it cannot decode alone', () => {
+    // A stray `%` is not an escape sequence. Decoding it would throw, and a
+    // file called `100%.html` is a perfectly ordinary name.
+    assert.equal(decodePath('/100%.html'), '/100%.html')
+})
+
+test('urlToPrerenderPath decodes a percent-encoded path', () => {
+    assert.equal(urlToPrerenderPath('/docs/getting%20started'), 'docs/getting started.html')
+})
+
+test('prerenderPathToUrl decodes a percent-encoded file name', () => {
+    assert.equal(prerenderPathToUrl('docs/getting%20started.html'), '/docs/getting started')
+})
+
+test('a percent-encoded path and the file that backs it are the same page', () => {
+    // The original defect. The two sides disagreed about encoding: the URL
+    // kept the percent-encoding and the file did not, so one page was
+    // reported as a 404 and as a stray file at the same time, and a correct
+    // artifact was refused.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/docs/getting%20started`],
+        prerendered: ['index.html', 'docs/getting started.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.missing, [])
+    assert.deepEqual(result.orphaned, [])
+})
+
+test('a build that writes percent-encoded file names is recognised too', () => {
+    // The other convention. A fix that only decoded the URL would have fixed
+    // the case above and broken this one - trading a false positive for a
+    // false negative, which is the one trade this tool must not make.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/docs/getting%20started`],
+        prerendered: ['index.html', 'docs/getting%20started.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.missing, [])
+    assert.deepEqual(result.orphaned, [])
+})
+
+test('an accented path is the same page whichever way it is written', () => {
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/docs/caf%C3%A9`],
+        prerendered: ['index.html', 'docs/café.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.missing, [])
+    assert.deepEqual(result.orphaned, [])
+})
+
+test('a non-Latin path is the same page whichever way it is written', () => {
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/docs/%E6%97%A5%E6%9C%AC%E8%AA%9E`],
+        prerendered: ['index.html', 'docs/日本語.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.missing, [])
+    assert.deepEqual(result.orphaned, [])
+})
+
+test('a sitemap may spell a path with raw characters instead of encoding it', () => {
+    // A sitemap with a literal space or a literal accented character is not
+    // strictly conformant, but the URL parser normalises it, and the file
+    // that backs it still has to be found.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/docs/café`],
+        prerendered: ['index.html', 'docs/café.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.missing, [])
+    assert.deepEqual(result.orphaned, [])
+})
+
+test('an encoded slash is not a path separator', () => {
+    // `%2F` names one segment whose character is a slash. Decoding it would
+    // turn `/docs/a%2Fb` into `/docs/a/b` and match it against a different
+    // page's file, which is a false negative.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/docs/a%2Fb`],
+        prerendered: ['index.html', 'docs/a/b.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.missing.length, 1)
+    assert.equal(result.missing[0].expectedFile, 'docs/a%2Fb.html')
+})
+
+test('a file name with a stray percent sign is still found', () => {
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/100%25`],
+        prerendered: ['index.html', '100%.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.missing, [])
+    assert.deepEqual(result.orphaned, [])
+})
+
+test('an encoded path that was never built is still reported', () => {
+    // The fix must not turn the check into a rubber stamp: a page that is
+    // advertised and not built is still a 404, encoded or not.
+    const result = audit({
+        advertised: [`${ORIGIN}/`, `${ORIGIN}/docs/getting%20started`],
+        prerendered: ['index.html'],
+        origin: ORIGIN,
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.missing.length, 1)
+    assert.equal(result.missing[0].expectedFile, 'docs/getting started.html')
 })
 
 // ---------------------------------------------------------------- audit
