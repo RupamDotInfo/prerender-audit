@@ -152,10 +152,39 @@ INPUT UNUSABLE - this is not evidence of agreement
 | `/about` | `about.html` |
 | `/products/lanfy` | `products/lanfy.html` |
 | `/products/lanfy/downloads` | `products/lanfy/downloads.html` |
+| `/docs/getting%20started` | `docs/getting started.html` |
 
 A trailing slash is ignored. This is the flat-output convention used by
 vite-ssg, Nuxt, Astro and `next export`, which is what makes the check possible
 at all.
+
+## Percent-encoding
+
+A URL path carries its percent-encoding on the wire; the file that backs it
+may be written with the encoding or without it.
+`https://example.com/docs/getting%20started` is served by
+`docs/getting started.html` on some generators and by
+`docs/getting%20started.html` on others, and the sitemap may spell it either
+way too.
+
+**The decision: neither file-name convention is authoritative.** The tool
+compares the two sides by their *decoded* path, so a page is recognised
+whichever way it was written. A fix that only decoded the URL would have
+fixed half the sites and broken the other half — trading a false positive for
+a false negative.
+
+The decision affects only what is *reported*, never whether a page matches:
+
+- A page that is genuinely missing is reported with the **decoded** file name
+  (`docs/getting started.html`), because that is the name most generators
+  write. On a site whose generator writes the encoded name instead, the name
+  in that line will not be the name on disk.
+- A prerendered file that is not advertised is reported with a **decoded**
+  URL (`/docs/getting started`), for the same reason.
+
+One exception: an encoded slash (`%2F`) is left encoded, because it is a
+slash inside a path segment rather than a separator between segments.
+Decoding it would turn one page into two.
 
 ## Limitations
 
@@ -177,6 +206,10 @@ Honest about what this does **not** do:
   well-formed or renders anything.
 - **Redirects are not modelled.** A prerendered redirect stub is treated as an
   ordinary page.
+- **Duplicate entries are compared as written.** A sitemap listing the same
+  page twice in two different spellings (`/docs/a%20b` and `/docs/a b`) is not
+  reported as a duplicate, because the two entries are not the same string.
+  The page itself is matched against one file either way.
 
 ## Development
 

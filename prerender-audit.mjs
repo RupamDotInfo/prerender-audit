@@ -84,15 +84,53 @@ function decodeXmlEntities(value) {
 // ---------------------------------------------------------------- paths
 
 /**
+ * Decode the percent-encoding in one path segment.
+ *
+ * An encoded slash is left encoded. `%2F` is a slash *inside* a segment, not
+ * a separator between segments, so decoding it would turn one page into two
+ * and match it against a different page's file.
+ *
+ * Everything else is decoded, including multi-byte UTF-8 sequences, which is
+ * why the whole segment is decoded at once rather than escape by escape:
+ * `%E6%97%A5` is one character, not three.
+ *
+ * A segment that cannot be decoded - a stray `%`, say - is returned as it is.
+ */
+function decodeSegment(segment) {
+    const encodedSlash = '\u0000'
+    const guarded = segment.replace(/%2f/gi, encodedSlash)
+    try {
+        return decodeURIComponent(guarded).split(encodedSlash).join('%2F')
+    } catch {
+        return segment
+    }
+}
+
+/**
+ * The decoded form of a URL path or of a prerendered file path.
+ *
+ * Both sides of the comparison go through this, so a path spelled with
+ * percent-encoding on one side and without it on the other is recognised as
+ * the same page - whichever convention the build used for its file names.
+ */
+export function decodePath(p) {
+    return p.split('/').map(decodeSegment).join('/')
+}
+
+/**
  * Turn a URL into the prerendered file that should back it.
  *
  * `/` becomes `index.html`, `/about` becomes `about.html`,
  * `/products/lanfy/downloads` becomes `products/lanfy/downloads.html`.
  * That mapping is the convention every mainstream SSG uses for a flat output
  * directory, which is what makes this checkable at all.
+ *
+ * The path is decoded first. A URL carries its percent-encoding, and the file
+ * that backs it may be written with the encoding or without it; the decoded
+ * path is what both sides agree on.
  */
 export function urlToPrerenderPath(urlPath) {
-    const clean = urlPath.replace(/\/+$/, '')
+    const clean = decodePath(urlPath).replace(/\/+$/, '')
     const relative = clean === '' ? 'index.html' : `${clean.replace(/^\//, '')}.html`
     return relative
 }
@@ -102,12 +140,16 @@ export function urlToPrerenderPath(urlPath) {
  *
  * `index.html` is the site root, and `404.html` is an error document that is
  * deliberately not a crawlable URL.
+ *
+ * The file name is decoded for the same reason the URL path is: the two
+ * directions have to meet in the same place.
  */
 export function prerenderPathToUrl(relative, extras = DEFAULT_EXTRAS) {
     const normalised = relative.replace(/\\/g, '/')
     if (extras.includes(normalised)) return null
-    if (normalised === 'index.html') return '/'
-    return '/' + normalised.replace(/\.html$/i, '')
+    const decoded = decodePath(normalised)
+    if (decoded === 'index.html') return '/'
+    return '/' + decoded.replace(/\.html$/i, '')
 }
 
 // ---------------------------------------------------------------- walking
@@ -144,6 +186,21 @@ export function audit({ advertised, prerendered, origin, extras = DEFAULT_EXTRAS
     const duplicates = []
     const orphaned = []
     const unusable = []
+
+    /*
+     * The prerendered files, named the way the comparison sees them.
+     *
+     * A URL carries its percent-encoding; the file that backs it may be
+     * written with the encoding or without it, because the convention is not
+     * universal. Comparing the decoded names on both sides means the
+     * convention the build happened to use does not decide whether a page
+     * matches.
+     *
+     * A fix that only decoded the URL would trade a false positive here for a
+     * false negative: correct artifacts whose file names are encoded would
+     * still be refused.
+     */
+    const prerenderedNames = new Set(prerendered.map(decodePath))
 
     /*
      * Empty input is never agreement.
@@ -184,7 +241,7 @@ export function audit({ advertised, prerendered, origin, extras = DEFAULT_EXTRAS
         }
 
         const expectedFile = urlToPrerenderPath(parsed.pathname)
-        if (!prerendered.includes(expectedFile)) {
+        if (!prerenderedNames.has(expectedFile)) {
             missing.push({ url, expectedFile })
         }
     }
@@ -205,7 +262,7 @@ export function audit({ advertised, prerendered, origin, extras = DEFAULT_EXTRAS
 
     for (const file of prerendered) {
         if (extras.includes(file)) continue
-        if (advertisedPaths.has(file)) continue
+        if (advertisedPaths.has(decodePath(file))) continue
         orphaned.push({ url: prerenderPathToUrl(file), file })
     }
 
